@@ -28,6 +28,31 @@ const userSchema = new mongoose.Schema(
       type: String,
       default: null,
     },
+
+    skills: {
+      type: [String],
+      default: [],
+    },
+
+    targetRoles: {
+      type: [String],
+      default: [],
+    },
+
+    interestedCompanies: {
+      type: [String],
+      default: [],
+    },
+
+    interestedCompanyRoles: {
+      type: [
+        {
+          company: { type: String, required: true },
+          role: { type: String, required: true },
+        },
+      ],
+      default: [],
+    },
   },
   {
     timestamps: true,

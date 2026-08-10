@@ -1,6 +1,11 @@
 const User = require("../models/User");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
+const {
+  isValidEmail,
+  isValidName,
+  isValidPassword,
+} = require("../utils/validation");
 
 const issueToken = (user) => {
   return jwt.sign(
@@ -32,15 +37,27 @@ const sendAuthPayload = (res, user, token) => {
 // =====================
 const registerUser = async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password } = req.body || {};
 
-    if (!name || !email || !password) {
+    if (!isValidName(name)) {
       return res.status(400).json({
-        message: "Name, email, and password are required",
+        message: "Name must be at least 2 characters long",
       });
     }
 
-    const userExists = await User.findOne({ email });
+    if (!isValidEmail(email)) {
+      return res.status(400).json({
+        message: "A valid email address is required",
+      });
+    }
+
+    if (!isValidPassword(password)) {
+      return res.status(400).json({
+        message: "Password must be at least 6 characters long",
+      });
+    }
+
+    const userExists = await User.findOne({ email: email.trim().toLowerCase() });
 
     if (userExists) {
       return res.status(400).json({
@@ -51,8 +68,8 @@ const registerUser = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const user = await User.create({
-      name,
-      email,
+      name: name.trim(),
+      email: email.trim().toLowerCase(),
       password: hashedPassword,
       provider: "local",
     });
@@ -81,9 +98,15 @@ const registerUser = async (req, res) => {
 // =====================
 const loginUser = async (req, res) => {
   try {
-    const { email, password } = req.body;
+    const { email, password } = req.body || {};
 
-    const user = await User.findOne({ email });
+    if (!isValidEmail(email) || !password) {
+      return res.status(400).json({
+        message: "Email and password are required",
+      });
+    }
+
+    const user = await User.findOne({ email: email.trim().toLowerCase() });
 
     if (!user) {
       return res.status(400).json({
@@ -139,16 +162,19 @@ const googleOAuthStart = (req, res) => {
 const googleOAuthCallback = async (req, res) => {
   const { code } = req.query;
 
+  const clientUrl = process.env.CLIENT_URL || "http://localhost:3000";
+  const loginUrl = `${clientUrl}/login`;
+
+  const redirectWithError = (message) => {
+    res.redirect(`${loginUrl}#error=${encodeURIComponent(message)}`);
+  };
+
   if (!code) {
-    return res.status(400).json({
-      message: "OAuth code missing",
-    });
+    return redirectWithError("OAuth code missing");
   }
 
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET || !process.env.GOOGLE_REDIRECT_URI) {
-    return res.status(501).json({
-      message: "Google OAuth credentials are not configured",
-    });
+    return redirectWithError("Google OAuth credentials are not configured");
   }
 
   try {
@@ -169,9 +195,7 @@ const googleOAuthCallback = async (req, res) => {
     const tokenData = await tokenResponse.json();
 
     if (!tokenResponse.ok || !tokenData.access_token) {
-      return res.status(401).json({
-        message: "Google OAuth token exchange failed",
-      });
+      return redirectWithError("Google OAuth token exchange failed");
     }
 
     const profileResponse = await fetch("https://www.googleapis.com/oauth2/v2/userinfo", {
@@ -181,9 +205,7 @@ const googleOAuthCallback = async (req, res) => {
     });
 
     if (!profileResponse.ok) {
-      return res.status(401).json({
-        message: "Unable to read Google profile",
-      });
+      return redirectWithError("Unable to read Google profile");
     }
 
     const profile = await profileResponse.json();
@@ -208,23 +230,19 @@ const googleOAuthCallback = async (req, res) => {
     const token = issueToken(user);
 
     const payload = {
-      message: "Google OAuth login successful",
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        provider: user.provider,
-      },
+      id: user._id,
+      name: user.name,
+      email: user.email,
+      provider: user.provider,
     };
 
-    return res.status(200).json(payload);
+    return res.redirect(
+      `${loginUrl}#token=${token}&user=${encodeURIComponent(JSON.stringify(payload))}`
+    );
   } catch (error) {
-    console.error(error);
+    console.error("Google OAuth error:", error.message);
 
-    return res.status(500).json({
-      message: error.message || "Google OAuth failed",
-    });
+    return redirectWithError("Google OAuth failed");
   }
 };
 

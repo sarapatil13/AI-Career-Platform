@@ -24,12 +24,14 @@ const predictPlacement = async (features) => {
     payload[feature] = Number(features[feature] ?? 0);
   });
 
+  // NOTE: This is a deterministic heuristic demo rule, NOT a trained ML model.
+  // A real model would be trained on a placement dataset (see trainMlPipeline).
   const probability = Math.max(0, Math.min(1, 0.72 + (payload.cgpa - 6) * 0.03));
   const label = probability >= 0.7 ? "likely" : "needs-support";
 
   return {
-    model: "Educational ensemble",
-    interpretation: "This endpoint demonstrates the requested MVP ML prediction architecture.",
+    method: "heuristic-rule",
+    interpretation: "Demo only: a deterministic rule (0.72 + (cgpa - 6) * 0.03) estimates placement likelihood. No machine-learning model is involved.",
     probability,
     label,
     modelInputs: payload
@@ -53,8 +55,9 @@ const trainMlPipeline = async () => {
   }
 
   return {
-    status: "student_mvp_pipeline_ready",
+    status: "design_scaffold_only",
     dataset: mlPipeline.datasetPath,
+    note: "No model is trained here. This endpoint only documents the intended pipeline (RandomForest, XGBoost, LightGBM) and prepares a sample dataset for a future Python-based implementation.",
     models: ["RandomForest", "XGBoost", "LightGBM"],
     mlflow: {
       enabled: false,

@@ -15,6 +15,10 @@ server/logs/
 server/.cache/
 coverage/
 
+# Runtime-generated ML scaffold (sample dataset + artifacts)
+server/data/
+server/ml_artifacts/
+
 # Logs and process output
 *.log
 *.log.*

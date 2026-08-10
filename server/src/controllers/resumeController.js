@@ -1,10 +1,54 @@
 const { generateFeedback } = require("../services/geminiService");
 const fs = require("fs");
 const pdfParse = require("pdf-parse");
+const mammoth = require("mammoth");
 const { analyzeResume } = require("../services/atsService");
-const { generateCareerRecommendations, generateCareerGuidanceText } = require("../services/careerService");
-const { prepareInterview: prepareInterviewService } = require("../services/interviewService");
-const { predictPlacement: predictPlacementService } = require("../services/mlService");
+const ResumeAnalysis = require("../models/ResumeAnalysis");
+const activityService = require("../services/activityService");
+
+const MAX_RESUME_TEXT_LENGTH = 50000;
+
+// Uploaded resumes are processed in memory and then deleted from disk so
+// personal data is not left in the uploads folder.
+const removeUploadedFile = (filePath) => {
+  if (!filePath) return;
+  fs.unlink(filePath, () => {});
+};
+
+const persistResumeAnalysis = async ({ userId, filename, analysis, aiFeedback }) => {
+  await ResumeAnalysis.create({
+    user: userId,
+    filename: filename || "",
+    atsScore: analysis.atsScore,
+    foundSkills: analysis.foundSkills,
+    missingSkills: analysis.missingSkills,
+    recommendations: analysis.suggestions,
+    aiFeedback:
+      typeof aiFeedback === "string"
+        ? aiFeedback
+        : JSON.stringify(aiFeedback || ""),
+    source: "fallback-heuristic",
+  });
+
+  await activityService.recordActivityQuietly({
+    userId,
+    type: "resume_analyzed",
+    summary: `Resume analyzed (ATS ${analysis.atsScore}/100)`,
+    metadata: { key: "analysis", atsScore: analysis.atsScore },
+  });
+};
+
+const extractText = async (file) => {
+  const dataBuffer = fs.readFileSync(file.path);
+
+  if (file.mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document") {
+    const result = await mammoth.extractRawText({ buffer: dataBuffer });
+    return result.value;
+  }
+
+  const pdfData = await pdfParse(dataBuffer);
+  return pdfData.text;
+};
 
 const uploadResume = async (req, res) => {
   try {
@@ -14,32 +58,42 @@ const uploadResume = async (req, res) => {
       });
     }
 
-    const dataBuffer = fs.readFileSync(req.file.path);
-    const pdfData = await pdfParse(dataBuffer);
+    try {
+      const extractedText = await extractText(req.file);
 
-    const analysis = analyzeResume(pdfData.text);
-    const aiFeedback = await generateFeedback(pdfData.text);
+      if (!extractedText || extractedText.trim().length === 0) {
+        return res.status(422).json({
+          message: "No readable text could be extracted from the uploaded file.",
+        });
+      }
 
-    console.log("========== RESUME TEXT ==========");
-    console.log(pdfData.text);
-    console.log("================================");
+      const analysis = analyzeResume(extractedText);
+      const aiFeedback = await generateFeedback(extractedText);
 
-    res.status(200).json({
-      message: "Resume uploaded successfully",
-      analysis,
-      aiFeedback,
-      extractedText: pdfData.text,
-      file: {
-        filename: req.file.filename,
-        originalname: req.file.originalname,
-        mimetype: req.file.mimetype,
-        size: req.file.size,
-        path: req.file.path,
-      },
-    });
+      await persistResumeAnalysis({
+        userId: req.user._id,
+        filename: req.file.originalname,
+        analysis,
+        aiFeedback,
+      });
+
+      res.status(200).json({
+        message: "Resume uploaded successfully",
+        analysis,
+        aiFeedback,
+        extractedText,
+        file: {
+          filename: req.file.filename,
+          originalname: req.file.originalname,
+          mimetype: req.file.mimetype,
+          size: req.file.size,
+        },
+      });
+    } finally {
+      removeUploadedFile(req.file.path);
+    }
   } catch (error) {
-    console.error("UPLOAD ERROR:");
-    console.error(error);
+    console.error("UPLOAD ERROR:", error.message);
 
     res.status(500).json({
       message: error.message,
@@ -49,7 +103,7 @@ const uploadResume = async (req, res) => {
 
 const analyzeResumeText = async (req, res) => {
   try {
-    const { resumeText } = req.body;
+    const { resumeText } = req.body || {};
 
     if (!resumeText || typeof resumeText !== "string") {
       return res.status(400).json({
@@ -57,8 +111,27 @@ const analyzeResumeText = async (req, res) => {
       });
     }
 
+    if (resumeText.trim().length === 0) {
+      return res.status(400).json({
+        message: "resumeText cannot be empty",
+      });
+    }
+
+    if (resumeText.length > MAX_RESUME_TEXT_LENGTH) {
+      return res.status(400).json({
+        message: `resumeText must be at most ${MAX_RESUME_TEXT_LENGTH} characters`,
+      });
+    }
+
     const analysis = analyzeResume(resumeText);
     const aiFeedback = await generateFeedback(resumeText);
+
+    await persistResumeAnalysis({
+      userId: req.user._id,
+      filename: "",
+      analysis,
+      aiFeedback,
+    });
 
     res.status(200).json({
       message: "Resume analysis complete",
@@ -73,77 +146,7 @@ const analyzeResumeText = async (req, res) => {
   }
 };
 
-const prepareInterviewHandler = async (req, res) => {
-  try {
-    const payload = req.body;
-
-    const result = await prepareInterviewService(payload);
-
-    res.status(200).json({
-      message: "Interview preparation generated",
-      ...result,
-    });
-  } catch (error) {
-    res.status(500).json({
-      message: error.message,
-    });
-  }
-};
-
-const recommendCareer = async (req, res) => {
-  try {
-    const payload = req.body;
-
-    const result = await generateCareerRecommendations(payload);
-
-    res.status(200).json({
-      message: "Career recommendations generated",
-      ...result,
-    });
-  } catch (error) {
-    res.status(500).json({
-      message: error.message,
-    });
-  }
-};
-
-const guideCareer = async (req, res) => {
-  try {
-    const payload = req.body;
-
-    const result = await generateCareerGuidanceText(payload);
-
-    res.status(200).json({
-      message: "Career guidance generated",
-      ...result,
-    });
-  } catch (error) {
-    res.status(500).json({
-      message: error.message,
-    });
-  }
-};
-
-const predictPlacementHandler = async (req, res) => {
-  try {
-    const result = await predictPlacementService(req.body);
-
-    res.status(200).json({
-      message: "Placement prediction complete",
-      prediction: result,
-    });
-  } catch (error) {
-    res.status(500).json({
-      message: error.message,
-    });
-  }
-};
-
 module.exports = {
   uploadResume,
   analyzeResumeText,
-  prepareInterview: prepareInterviewHandler,
-  recommendCareer,
-  guideCareer,
-  predictPlacement: predictPlacementHandler,
 };
